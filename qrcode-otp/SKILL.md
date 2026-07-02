@@ -78,6 +78,30 @@ node otp.mjs --image /caminho/do/qrcode.png
 node otp.mjs --image /caminho/qr.png --json
 ```
 
+## Cofre — reutilizar secrets entre sessoes
+
+O secret pode ser salvo em um cofre local para gerar codigos em sessoes futuras sem reler o QRCode. O cofre fica em `~/.local/share/qrcode-otp/vault.json` (respeita `XDG_DATA_HOME`), **fora do repositorio versionado**, com permissao `600` (so o dono le). Cada conta e guardada por um **nome** escolhido por voce.
+
+```bash
+# salvar ao ler (funciona com --image, --uri/otpauth:// ou --secret):
+node otp.mjs --image qr.png --save github
+node otp.mjs --secret KRSXG5CTMVRXEZLU --save aws
+
+# gerar o codigo de uma conta salva:
+node otp.mjs --use github
+node otp.mjs --use github --json
+
+# listar contas salvas (mostra nome, issuer/label e parametros — NUNCA o secret):
+node otp.mjs --list
+
+# remover uma conta:
+node otp.mjs --remove github
+```
+
+`--save` grava o secret e ja gera o codigo na mesma execucao. Ao usar `--use`, digits/period/algorithm vem do que foi salvo.
+
+> O cofre guarda o secret em **texto plano**, protegido apenas pela permissao de arquivo (`600`). Nunca commite `vault.json` nem o copie para dentro do repositorio. Se a maquina for compartilhada ou o secret vazar, revogue o 2FA no provedor e refaca o setup.
+
 Saida padrao: o codigo de 6 digitos na stdout e `(valido por mais Ns)` na stderr. Reporte ao usuario o **codigo** e **quanto tempo ainda e valido** — se faltarem poucos segundos, avise que um novo codigo esta prestes a ser gerado.
 
 ## Parametros TOTP
@@ -95,10 +119,11 @@ Ao usar `--image` ou a URI, esses valores sao lidos automaticamente. Ao usar `--
 
 O `secret` do TOTP e equivalente a uma senha permanente: quem o tem gera codigos validos para sempre. Portanto:
 
-- **Nunca** grave o secret nem a URI otpauth em arquivos versionados, logs ou historico de commits.
+- **Nunca** grave o secret nem a URI otpauth em arquivos **versionados**, logs ou historico de commits. O cofre (`--save`) e a unica excecao: fica fora do repo, em `~/.local/share/qrcode-otp/vault.json` com chmod 600.
 - Prefira passar a **imagem** (`--image`) a colar o secret em texto, quando possivel.
-- Nao ecoe o secret de volta ao usuario sem necessidade; reporte apenas o **codigo de 6 digitos** gerado.
+- Nao ecoe o secret de volta ao usuario sem necessidade; reporte apenas o **codigo de 6 digitos** gerado. O `--list` nunca imprime o secret.
 - Se o secret aparecer em uma mensagem, trate-o como credencial: nao o repita em resumos.
+- O `vault.json` guarda os secrets em texto plano: qualquer processo rodando como o seu usuario consegue ler. Nao use em maquina compartilhada sem cuidado.
 
 ## Exemplo de Uso
 

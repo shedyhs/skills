@@ -13,10 +13,53 @@
 // Codigo de saida !=0 em erro, com mensagem no stderr.
 
 import { createHmac } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const DEFAULTS = { digits: 6, period: 30, algorithm: 'SHA1' };
 const ALGO_MAP = { SHA1: 'sha1', SHA256: 'sha256', SHA512: 'sha512' };
+
+// --- Cofre local de secrets (plaintext, chmod 600) ---------------------------
+// Guarda os secrets fora do repositorio versionado, em ~/.local/share (XDG),
+// para reuso entre sessoes. O arquivo NUNCA deve ser commitado.
+function vaultDir() {
+  const base = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
+  return join(base, 'qrcode-otp');
+}
+function vaultPath() {
+  return join(vaultDir(), 'vault.json');
+}
+function loadVault() {
+  const path = vaultPath();
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    throw new Error(`cofre corrompido em ${path}: ${err.message}`);
+  }
+}
+function saveVault(vault) {
+  const dir = vaultDir();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = vaultPath();
+  writeFileSync(path, JSON.stringify(vault, null, 2) + '\n', { mode: 0o600 });
+  // writeFileSync so aplica mode na criacao; forca 600 mesmo se ja existia.
+  chmodSync(path, 0o600);
+  return path;
+}
+function normalizeName(name) {
+  const clean = String(name ?? '').trim();
+  if (!clean) throw new Error('nome da conta vazio (use --save <nome> ou --use <nome>)');
+  return clean;
+}
 
 // --- Base32 (RFC 4648) -> Buffer ---------------------------------------------
 function base32Decode(input) {
@@ -124,6 +167,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
+    else if (a === '--list') args.list = true;
     else if (a === '--help' || a === '-h') args.help = true;
     else if (a.startsWith('--')) args[a.slice(2)] = argv[++i];
     else args._.push(a);
@@ -138,6 +182,12 @@ function usage() {
     '  node otp.mjs --secret JBSWY3DPEHPK3PXP [--digits 6] [--period 30] [--algorithm SHA1]',
     '  node otp.mjs --image /caminho/qr.png',
     '  (adicione --json para saida estruturada)',
+    '',
+    'Cofre (reuso entre sessoes, ~/.local/share/qrcode-otp/vault.json, chmod 600):',
+    '  node otp.mjs --image qr.png --save github   salva o secret com o nome "github"',
+    '  node otp.mjs --use github                   gera o codigo da conta salva',
+    '  node otp.mjs --list                         lista as contas salvas (sem o secret)',
+    '  node otp.mjs --remove github                remove uma conta do cofre',
   ].join('\n');
 }
 
@@ -149,10 +199,49 @@ async function main() {
     return;
   }
 
+  // --- Operacoes de cofre que nao geram codigo -------------------------------
+  if (args.list) {
+    const vault = loadVault();
+    const names = Object.keys(vault).sort();
+    if (names.length === 0) {
+      console.error('(cofre vazio)');
+      return;
+    }
+    for (const name of names) {
+      const e = vault[name];
+      const meta = [e.issuer, e.label].filter(Boolean).join(' / ') || '-';
+      console.log(`${name}\t${meta}\t${e.algorithm} ${e.digits}dig ${e.period}s`);
+    }
+    return;
+  }
+
+  if ('remove' in args || 'delete' in args) {
+    const name = normalizeName(args.remove ?? args.delete);
+    const vault = loadVault();
+    if (!(name in vault)) throw new Error(`conta "${name}" nao existe no cofre`);
+    delete vault[name];
+    const path = saveVault(vault);
+    console.error(`conta "${name}" removida de ${path}`);
+    return;
+  }
+
   let config;
   const positional = args._[0];
 
-  if (args.image) {
+  if ('use' in args) {
+    const name = normalizeName(args.use);
+    const vault = loadVault();
+    const entry = vault[name];
+    if (!entry) throw new Error(`conta "${name}" nao existe no cofre (use --list para ver as salvas)`);
+    config = {
+      secret: entry.secret,
+      label: entry.label ?? null,
+      issuer: entry.issuer ?? null,
+      digits: entry.digits ?? DEFAULTS.digits,
+      period: entry.period ?? DEFAULTS.period,
+      algorithm: entry.algorithm ?? DEFAULTS.algorithm,
+    };
+  } else if (args.image) {
     const uri = await readQrFromImage(args.image);
     if (!uri.startsWith('otpauth://')) {
       throw new Error(`o QRCode nao contem um otpauth:// (conteudo lido: ${uri.slice(0, 80)})`);
@@ -171,6 +260,25 @@ async function main() {
     };
   } else {
     throw new Error(`nenhuma entrada valida.\n\n${usage()}`);
+  }
+
+  // --- Persistir no cofre, se pedido (--save) --------------------------------
+  if ('save' in args) {
+    const name = normalizeName(args.save);
+    // valida o secret antes de gravar: falha aqui evita salvar lixo.
+    generateTotp({ ...config, forTime: Date.now() });
+    const vault = loadVault();
+    vault[name] = {
+      secret: config.secret,
+      label: config.label ?? null,
+      issuer: config.issuer ?? null,
+      digits: config.digits,
+      period: config.period,
+      algorithm: config.algorithm,
+      savedAt: new Date().toISOString(),
+    };
+    const path = saveVault(vault);
+    console.error(`conta "${name}" salva em ${path} (chmod 600)`);
   }
 
   const { code, remaining, seconds } = generateTotp({ ...config, forTime: Date.now() });
