@@ -1,0 +1,14 @@
+{
+  "name": "qrcode-otp-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scripts da skill qrcode-otp: gera codigo TOTP a partir de otpauth:// (string ou QRCode em imagem).",
+  "bin": {
+    "otp": "./otp.mjs"
+  },
+  "dependencies": {
+    "jimp": "^1.6.0",
+    "jsqr": "^1.4.0"
+  }
+}
