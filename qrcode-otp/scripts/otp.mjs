@@ -26,6 +26,9 @@ import {
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const DEFAULTS = { digits: 6, period: 30, algorithm: 'SHA1' };
 const ALGO_MAP = { SHA1: 'sha1', SHA256: 'sha256', SHA512: 'sha512' };
+// Internamente o gerador trabalha em milissegundos. Um epoch em segundos so
+// passaria deste corte no ano ~33658, entao da para aceitar as duas unidades.
+const MS_THRESHOLD = 1e12;
 
 // --- Cofre local de secrets (plaintext, chmod 600) ---------------------------
 // Guarda os secrets fora do repositorio versionado, em ~/.local/share (XDG),
@@ -162,11 +165,24 @@ async function readQrFromImage(imagePath) {
 }
 
 // --- Parse de argumentos -----------------------------------------------------
+// Aceita epoch em segundos (formato documentado) ou em milissegundos.
+function parseForTime(raw) {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `--forTime invalido: "${raw ?? ''}" (use um epoch em segundos, ex. 1634567890)`
+    );
+  }
+  return value >= MS_THRESHOLD ? value : value * 1000;
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
+    // tolera --fortime e --for-time: a grafia camelCase e facil de errar no shell
+    else if (/^--for-?time$/i.test(a)) args.forTime = parseForTime(argv[++i]);
     else if (a === '--list') args.list = true;
     else if (a === '--help' || a === '-h') args.help = true;
     else if (a.startsWith('--')) args[a.slice(2)] = argv[++i];
@@ -181,6 +197,8 @@ function usage() {
     '  node otp.mjs "otpauth://totp/...?secret=XXX"',
     '  node otp.mjs --secret JBSWY3DPEHPK3PXP [--digits 6] [--period 30] [--algorithm SHA1]',
     '  node otp.mjs --image /caminho/qr.png',
+    '  node otp.mjs --secret XXX --forTime 1634567890   codigo para um instante especifico',
+    '    (epoch em segundos; valores >= 1e12 sao tratados como milissegundos)',
     '  (adicione --json para saida estruturada)',
     '',
     'Cofre (reuso entre sessoes, ~/.local/share/qrcode-otp/vault.json, chmod 600):',
@@ -266,7 +284,7 @@ async function main() {
   if ('save' in args) {
     const name = normalizeName(args.save);
     // valida o secret antes de gravar: falha aqui evita salvar lixo.
-    generateTotp({ ...config, forTime: Date.now() });
+    generateTotp({ ...config, forTime: args.forTime });
     const vault = loadVault();
     vault[name] = {
       secret: config.secret,
@@ -281,7 +299,7 @@ async function main() {
     console.error(`conta "${name}" salva em ${path} (chmod 600)`);
   }
 
-  const { code, remaining, seconds } = generateTotp({ ...config, forTime: Date.now() });
+  const { code, remaining, seconds } = generateTotp({ ...config, forTime: args.forTime });
 
   if (args.json) {
     console.log(
